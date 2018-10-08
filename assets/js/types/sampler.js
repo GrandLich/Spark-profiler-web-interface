@@ -1,71 +1,55 @@
-let profile;
+let activeData;
 
-function renameKeys(obj, newKeys) {
-    const keyValues = Object.keys(obj).map(key => {
-        const newKey = newKeys[key] || key;
-        return { [newKey]: obj[key] };
-    });
-    return Object.assign({}, ...keyValues);
+/**
+ * Called by the application to initialise the sampler view.
+ *
+ * @param data the json data to be viewed.
+ */
+function loadSampleData(data) {
+    renderData(data, simpleRender);
+    $("#mappings-selector").show();
+
+    // store so we can re-use later, if remapping is applied, for example.
+    activeData = data;
 }
 
-// expand shorthand key names
-const SHORTHAND_KEYS = {
-    c: "children",
-    t: "totalTime",
-    cl: "className",
-    m: "methodName"
-};
-
-// try to load the page from the url parameters when the page loads
-function loadContent() {
-    let params = document.location.search;
-    if (params) {
-        if (params.startsWith("?")) {
-            params = params.substring(1);
+/**
+ * Main function to load "sampler" data.
+ *
+ * @param data the json data to be viewed.
+ * @param renderingFunction the function to be used to represent sampler entries.
+ *        a rendering function can be described as:
+ *        (JS Object rep. of node, JSObject rep. of the parentNode, nullable) --> HTML representation of "node" as a string.
+ */
+function renderData(data, renderingFunction) {
+    let html;
+    if (!data["threads"]) {
+        html = '<p class="no-results">There are no results. (Thread filter does not match thread?)</p>';
+    } else {
+        html = "";
+        for (const thread of data["threads"]) {
+            html += renderStackToHtml(thread["rootNode"], thread["totalTime"], renderingFunction);
+            html += '\n';
         }
-
-        $(".intro").hide();
-        $(".loading").show().html("Loading data; please wait...");
-
-        // get data
-        const url = "https://bytebin.lucko.me/" + params;
-        console.log("Loading from URL: " + url);
-
-        $.ajax({
-            dataType: "text",
-            url: url,
-            success: function(raw) {
-                profile = JSON.parse(raw, function(key, value) {
-                    if (typeof value === "object" && !Array.isArray(value)) {
-                        return renameKeys(value, SHORTHAND_KEYS);
-                    }
-                    return value;
-                });
-                loadData(profile, NO_REMAPPING);
-                $("#mappings-selector").show();
-            }
-        }).fail(showLoadingError);
     }
+
+    const stack = $(".stack");
+    const loading = $(".loading");
+
+    stack.html(html);
+    loading.hide();
+    stack.show();
 }
 
-function showLoadingError() {
-    $(".loading").html("An error occurred whilst loading. Perhaps the data has expired?");
-}
-
-function escapeHtml(text) {
-    return text.replace(/[\"&'\/<>]/g, function(a) {
-        return {
-            '"': '&quot;',
-            '&': '&amp;',
-            "'": '&#39;',
-            '/': '&#47;',
-            '<': '&lt;',
-            '>': '&gt;'
-        }[a];
-    });
-}
-
-function renderStackToHtml(root, totalTime, remappingFunction) {
+/**
+ * Function to render the sampled data to html.
+ *
+ * @param root the root of the sample stack
+ * @param totalTime the total time taken by all nodes
+ * @param renderingFunction the function used for rendering nodes
+ * @returns {string} the html
+ */
+function renderStackToHtml(root, totalTime, renderingFunction) {
     let html = "";
 
     // init a new stack, and push the root element
@@ -105,7 +89,7 @@ function renderStackToHtml(root, totalTime, remappingFunction) {
             html += '<li>';
             html += '<div class="node collapsed">';
             html += '<div class="name">';
-            html += remappingFunction(node, parentNode);
+            html += renderingFunction(node, parentNode);
             html += '<span class="percent">' + timePercent + '</span>';
             html += '<span class="time">' + node["totalTime"] + 'ms</span>';
             html += '<span class="bar"><span class="bar-inner" style="width: ' + timePercent + '"></span></span>';
@@ -123,7 +107,14 @@ function renderStackToHtml(root, totalTime, remappingFunction) {
     return html.slice(4, -5);
 }
 
-const NO_REMAPPING = function(node, parentNode) {
+/**
+ * A render function that doesn't do any remapping!
+ *
+ * @param node
+ * @param parentNode
+ * @returns {string}
+ */
+function simpleRender(node, parentNode) {
     // extract class and method names from the node
     const className = node["className"];
     const methodName = node["methodName"];
@@ -132,32 +123,20 @@ const NO_REMAPPING = function(node, parentNode) {
     }
 
     return escapeHtml(className) + '.' + escapeHtml(methodName) + '()';
-};
-
-function loadData(data, remappingFunction) {
-    let html;
-    if (!data["threads"]) {
-        html = '<p class="no-results">There are no results. (Thread filter does not match thread?)</p>';
-    } else {
-        html = "";
-        for (const thread of data["threads"]) {
-            html += renderStackToHtml(thread["rootNode"], thread["totalTime"], remappingFunction);
-            html += '\n';
-        }
-    }
-
-    const stack = $(".stack");
-    const loading = $(".loading");
-
-    stack.html(html);
-    loading.hide();
-    stack.show();
 }
 
-// Do things when page has loaded
-$(loadContent);
-
-const bukkitRemappingFunction = function (node, parentNode, mcpMappings, bukkitMappings, methodCalls, nmsVersion) {
+/**
+ * Does the remapping work for the Bukkit rendering function.
+ *
+ * @param node the node
+ * @param parentNode the parent node
+ * @param mcpMappings mcp mapping data
+ * @param bukkitMappings bukkit mapping data
+ * @param methodCalls method call data
+ * @param nmsVersion the nms version used
+ * @returns {string}
+ */
+function doBukkitRemapping(node, parentNode, mcpMappings, bukkitMappings, methodCalls, nmsVersion) {
     // extract class and method names from the node
     const className = node["className"];
     const methodName = node["methodName"];
@@ -272,9 +251,16 @@ const bukkitRemappingFunction = function (node, parentNode, mcpMappings, bukkitM
     }
 
     return name;
-};
+}
 
-const forgeRemappingFunction = function (node, mcpMappings) {
+/**
+ * Does the remapping work for the MCP rendering function.
+ *
+ * @param node the node
+ * @param mcpMappings mcp mapping data
+ * @returns {string}
+ */
+function doMcpRemapping(node, mcpMappings) {
     // extract class and method names from the node
     const className = node["className"];
     const methodName = node["methodName"];
@@ -287,9 +273,8 @@ const forgeRemappingFunction = function (node, mcpMappings) {
         return escapeHtml(className) + '.<span class="remapped" title="' + methodName + '">' + escapeHtml(mcpMethodName) + '</span>()';
     }
 
-    const name = escapeHtml(className) + '.' + escapeHtml(methodName) + '()';
-    return name;
-};
+    return escapeHtml(className) + '.' + escapeHtml(methodName) + '()';
+}
 
 // listen for mapping selections
 $("#mappings-selector").find("select").change(function(e) {
@@ -299,19 +284,14 @@ $("#mappings-selector").find("select").change(function(e) {
 function applyRemapping(type) {
     if (type.startsWith("bukkit")) {
         const version = type.substring("bukkit-".length);
-        let nmsVersion;
-        if (version === "1_12_2") {
-            nmsVersion = "v1_12_R1";
-        }
-        if (version === "1_11_2") {
-            nmsVersion = "v1_11_R1";
-        }
-        if (version === "1_10_2") {
-            nmsVersion = "v1_10_R1";
-        }
-        if (version === "1_8_8") {
-            nmsVersion = "v1_8_R3";
-        }
+        const nmsVersion = {
+            "1_13_1": "1_13_R2",
+            "1_13": "1_13_R1",
+            "1_12_2": "v1_12_R1",
+            "1_11_2": "v1_11_R1",
+            "1_10_2": "v1_10_R1",
+            "1_8_8": "v1_8_R3"
+        }[version];
 
         $(".stack").hide();
         $(".loading").show().html("Remapping data; please wait...");
@@ -319,47 +299,50 @@ function applyRemapping(type) {
         $.getJSON("mappingdata/" + version + "/mcp.json", function(mcpMappings) {
             $.getJSON("mappingdata/" + version + "/bukkit.json", function(bukkitMappings) {
                 $.getJSON("mappingdata/" + version + "/methodcalls.json", function(methodCalls) {
-                    const remappingFunction = function(node, parentNode) {
-                        return bukkitRemappingFunction(node, parentNode, mcpMappings, bukkitMappings, methodCalls, nmsVersion);
+                    const renderingFunction = function(node, parentNode) {
+                        return doBukkitRemapping(node, parentNode, mcpMappings, bukkitMappings, methodCalls, nmsVersion);
                     };
 
-                    loadData(profile, remappingFunction)
+                    renderData(activeData, renderingFunction)
                 });
             });
         });
-    } else if (type.startsWith("forge")) {
-        const version = type.substring("forge-".length);
+    } else if (type.startsWith("mcp")) {
+        const version = type.substring("mcp-".length);
 
         $(".stack").hide();
         $(".loading").show().html("Remapping data; please wait...");
 
         $.getJSON("mappingdata/" + version + "/mcp.json", function(mcpMappings) {
-            const remappingFunction = function(node, parentNode) {
-                return forgeRemappingFunction(node, mcpMappings);
+            const renderingFunction = function(node, parentNode) {
+                return doMcpRemapping(node, mcpMappings);
             };
 
-            loadData(profile, remappingFunction)
+            renderData(activeData, renderingFunction)
         });
     } else {
         $(".stack").hide();
         $(".loading").show().html("Remapping data; please wait...");
 
         setTimeout(function() {
-            loadData(profile, NO_REMAPPING);
+            renderData(activeData, simpleRender);
         }, 10);
     }
 }
 
-function extractTime(el) {
-    const text = el.children(".name").children(".time").text().replace(/[^0-9]/, "");
-    return parseInt(text);
-}
+/*
+ * Define page listeners.
+ * These will be evaluated before any content has actually been rendered and added to the page.
+ */
 
-
-// setup page listeners
 const stack = $(".stack");
 const overlay = $("#overlay");
 
+/**
+ * Function to recursively expand the node tree.
+ *
+ * @param parent the parent element
+ */
 function expandTree(parent) {
     parent.removeClass("collapsed");
     parent.children("ul").slideDown(50);
@@ -369,11 +352,12 @@ function expandTree(parent) {
     if (len === 1) {
         const onlyChild = parent.children("ul").children("li").children(".node");
         if (onlyChild.hasClass("collapsed")) {
-            expandTree(onlyChild);
+            expandTree(onlyChild); // recursive call
         }
     }
 }
 
+// click node --> expand/collapse
 stack.on("click", ".name", function(e) {
     const parent = $(this).parent();
     if (parent.hasClass("collapsed")) {
@@ -384,6 +368,7 @@ stack.on("click", ".name", function(e) {
     }
 });
 
+// hover over node --> highlight and show time
 stack.on("mouseenter", ".name", function(e) {
     const $this = $(this);
     let thisTime = null;
@@ -407,3 +392,8 @@ stack.on("mouseenter", ".name", function(e) {
         }
     });
 });
+
+function extractTime(el) {
+    const text = el.children(".name").children(".time").text().replace(/[^0-9]/, "");
+    return parseInt(text);
+}
